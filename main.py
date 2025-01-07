@@ -7,6 +7,7 @@ import nltk
 from googletrans import Translator
 import re
 import spacy
+import torch
 
 app = FastAPI()
 
@@ -19,14 +20,16 @@ nlp = spacy.load("en_core_web_md")
 patterns = {
     "email": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
     "site": r"\b(?:https://|www\.)[^\s/$.?#].[^\s]*\b",
-    "identificaton number": r"""
+    "identification number": r"""
+    (?<=\s)
     (?:\+\d{1,3}|\(\+\d{1,3}\))?   # Optional country code (+1, (+98))
     [-.\s]?                         # Optional separator
     (?:\(?\d{2,5}\)?)?              # Optional area code with parentheses (e.g., (415))
     [-.\s]?                         # Optional separator
     \d{1,4}                         # First group of digits
     [-.\s]?                         # Optional separator
-    \d{4}                           # Second group of digits
+    \d{4}
+    (?=\s)
     """
 }
 
@@ -49,34 +52,33 @@ models = {
 # ner_xlm_roberta.model.save_pretrained("resources/ner_xlm_roberta")
 # ner_xlm_roberta.tokenizer.save_pretrained("resources/ner_xlm_roberta")
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("device = ",device)
+
+model_xlm_roberta = AutoModelForTokenClassification.from_pretrained("resources/ner_xlm_roberta").to(device)
+tokenizer_xlm_roberta = AutoTokenizer.from_pretrained("resources/ner_xlm_roberta")
+ner_xlm_roberta = pipeline("ner", model=model_xlm_roberta, tokenizer=tokenizer_xlm_roberta, device=device)
 
 
-# model_xlm_roberta = AutoModelForTokenClassification.from_pretrained("resources/ner_xlm_roberta")
-# tokenizer_xlm_roberta = AutoTokenizer.from_pretrained("resources/ner_xlm_roberta")
-# ner_xlm_roberta = pipeline("ner", model=model_xlm_roberta, tokenizer=tokenizer_xlm_roberta)
 
+model_parsbert = AutoModelForTokenClassification.from_pretrained("resources/ner_parsbert").to(device)
+tokenizer_parsbert = AutoTokenizer.from_pretrained("resources/ner_parsbert")
+ner_parsbert = pipeline("ner", model=model_parsbert, tokenizer=tokenizer_parsbert, device=device)
+# ner_parsbert = pipeline("ner", model="HooshvareLab/bert-base-parsbert-ner-uncased")
+# Save the model and tokenizer
+# ner_parsbert.model.save_pretrained("resources/ner_parsbert")
+# ner_parsbert.tokenizer.save_pretrained("resources/ner_parsbert")
 
-
-
-
-# model_parsbert = AutoModelForTokenClassification.from_pretrained("resources/ner_parsbert")
-# tokenizer_parsbert = AutoTokenizer.from_pretrained("resources/ner_parsbert")
-# ner_parsbert = pipeline("ner", model=model_parsbert, tokenizer=tokenizer_parsbert)
-# # ner_parsbert = pipeline("ner", model="HooshvareLab/bert-base-parsbert-ner-uncased")
-# # Save the model and tokenizer
-# # ner_parsbert.model.save_pretrained("resources/ner_parsbert")
-# # ner_parsbert.tokenizer.save_pretrained("resources/ner_parsbert")
-#
-# model_distilbert = AutoModelForTokenClassification.from_pretrained("resources/ner_distilbert")
+# model_distilbert = AutoModelForTokenClassification.from_pretrained("resources/ner_distilbert").to(device)
 # tokenizer_distilbert = AutoTokenizer.from_pretrained("resources/ner_distilbert")
-# ner_distilbert = pipeline("ner", model=model_distilbert, tokenizer=tokenizer_distilbert)
+# ner_distilbert = pipeline("ner", model=model_distilbert, tokenizer=tokenizer_distilbert, device=device)
 # # ner_distilbert = pipeline("ner", model="HooshvareLab/distilbert-fa-zwnj-base-ner")
 # # ner_distilbert.model.save_pretrained("resources/ner_distilbert")
 # # ner_distilbert.tokenizer.save_pretrained("resources/ner_distilbert")
 #
-# model_hafez = AutoModelForTokenClassification.from_pretrained("resources/ner_hafez")
+# model_hafez = AutoModelForTokenClassification.from_pretrained("resources/ner_hafez").to(device)
 # tokenizer_hafez = AutoTokenizer.from_pretrained("resources/ner_hafez")
-# ner_hafez = pipeline("ner", model=model_hafez, tokenizer=tokenizer_hafez)
+# ner_hafez = pipeline("ner", model=model_hafez, tokenizer=tokenizer_hafez, device=device)
 # # ner_hafez = pipeline("ner", model="ViravirastSHZ/Hafez-NER")
 # # ner_hafez.model.save_pretrained("resources/ner_hafez")
 # # ner_hafez.tokenizer.save_pretrained("resources/ner_hafez")
@@ -84,6 +86,18 @@ models = {
 # Create sentence tokenizer
 nltk.download('punkt_tab')
 sentence_tokenizer = nltk.data.load('tokenizers/punkt/english.pickle')
+
+# convert labels to united ones
+united_labes = {
+    'B-LOC':'B-location',
+    'B-MISC':'B-misc',
+    'B-ORG':'B-organization',
+    'I-LOC':'I-location',
+    'I-MISC':'I-misc',
+    'I-ORG':'I-organization',
+    'I-PER':'I-person',
+}
+
 
 def extract_entities_with_regex(text,sen):
     entities = []
@@ -99,7 +113,7 @@ def extract_entities_with_regex(text,sen):
     #         })
     # Compile patterns with re.VERBOSE for multi-line support
     compiled_patterns = {
-        key: re.compile(pattern, re.VERBOSE) if key == "identificaton number" else re.compile(pattern)
+        key: re.compile(pattern, re.VERBOSE) if key == "identification number" else re.compile(pattern)
         for key, pattern in patterns.items()
     }
     for entity_type, pattern in compiled_patterns.items():
@@ -125,7 +139,7 @@ def split_into_sentences(text: str) -> List[str]:
 
 @app.post("/process-text")
 async def process_text(
-    text: str = Form(...), model:int = 0
+    text: str = Form(...)
 ):
     """
     Endpoint to process raw text and extract named entities.
@@ -152,7 +166,7 @@ async def process_text(
                             break
                     else:
                         entities.append({
-                            "lang/sentence": "en/ " + sentence,
+                            "lang/sentence": "en/" + sentence,
                             "entity": new_entity.label_.lower(),
                             "start": new_entity.start_char,
                             "end": new_entity.end_char,
@@ -161,30 +175,50 @@ async def process_text(
 
 
             # step 3: Add language model result:
-            # result = ner_xlm_roberta(sentence)
-            # for new_entity in result:
-            #     for entity in entities:
-            #         if new_entity["start"] < entity["end"] and new_entity["end"] > entity["start"]:
-            #             break
-            #     else:
-            #         entities.append({
-            #             "lang/sentence":"en/ "+sentence,
-            #             "entity": result["entity"],
-            #             "start": result["start"],
-            #             "end": result["end"],
-            #             "word": result["word"],
-            #         })
+            result = ner_xlm_roberta(sentence)
+            for new_entity in result:
+                for entity in entities:
+                    if new_entity["start"] < entity["end"] and new_entity["end"] > entity["start"]:
+                        break
+
+                else:
+                    if entities:
+                        print(entities[-1])
+                        print(entities[-1]["end"])
+                        print('011')
+                        print(entities[-1]["end"] == new_entity["start"])
+                        print(entities[-1]["entity"][2:] == new_entity["entity"][2:])
+                    if entities and entities[-1]["end"] == new_entity["start"] and entities[-1]["entity"][2:] == new_entity["entity"][2:]:
+                        entities[-1]["word"] += new_entity["word"]
+                        entities[-1]["end"] = new_entity["end"]
+                    else:
+                        entities.append({
+                            "lang/sentence":"en/ "+sentence,
+                            "entity": new_entity["entity"],
+                            "start": new_entity["start"],
+                            "end": new_entity["end"],
+                            "word": new_entity["word"],
+                        })
 
 
         elif detection.lang == 'fa':
-            pass
-            # result = ner_parsbert(sentence)
-            # entities.append({
-            #     "entity": result["entity"],
-            #     "start": result["start"],
-            #     "end": result["end"],
-            #     "word": result["word"],
-            # })
+            result = ner_parsbert(sentence)
+            for new_entity in result:
+                for entity in entities:
+                    if new_entity["start"] < entity["end"] and new_entity["end"] > entity["start"]:
+                        break
+                else:
+                    if entities and entities[-1]["end"] == new_entity["start"] and entities[-1]["entity"][2:] == new_entity["entity"][2:]:
+                        entities[-1]["word"] += new_entity["word"]
+                        entities[-1]["end"] = new_entity["end"]
+                    else:
+                        entities.append({
+                            "lang/sentence": "fa/" + sentence,
+                            "entity": new_entity["entity"],
+                            "start": new_entity["start"],
+                            "end": new_entity["end"],
+                            "word": new_entity["word"],
+                        })
         else:
             return f"can't process {detection.lang} language texts!"
 
@@ -208,21 +242,78 @@ async def process_file(file: UploadFile):
     else:
         return {"error": "Unsupported file type. Please upload a .txt or .docx file."}
 
-    # Extract NER from the text
-    ner_results = ner_pipeline(text)
+    all_entities = []
+    sentences = split_into_sentences(text)
+    for sentence in sentences:
+        entities = []
+        print(sentence)
+        # Step 1: structured entities using regex
+        regex_entities = extract_entities_with_regex(sentence, "en/ " + sentence)
+        entities.extend(regex_entities)
 
-    # Format response
-    entities = [
-        {
-            "entity": result["entity"],
-            "type": result["entity"],
-            "start": result["start"],
-            "end": result["end"],
-            "word": result["word"],
-        }
-        for result in ner_results
-    ]
-    return {"entities": entities}
+        detection = translator.detect(sentence)
+        if detection.lang == 'en':
+            # Step 2: Add SpaCy results for date/event
+            doc = nlp(sentence)
+            print("spacy:", doc)
+            for new_entity in doc.ents:
+                print("spacy: ", new_entity, new_entity.label_)
+                if new_entity.label_ in {"DATE", "EVENT"}:
+                    for entity in entities:
+                        if new_entity.start_char < entity["end"] and new_entity.end_char > entity["start"]:
+                            break
+                    else:
+                        entities.append({
+                            "lang/sentence": "en/" + sentence,
+                            "entity": new_entity.label_.lower(),
+                            "start": new_entity.start_char,
+                            "end": new_entity.end_char,
+                            "word": new_entity.text,
+                        })
+
+            # step 3: Add language model result:
+            result = ner_xlm_roberta(sentence)
+            for new_entity in result:
+                for entity in entities:
+                    if new_entity["start"] < entity["end"] and new_entity["end"] > entity["start"]:
+                        break
+                else:
+                    if entities and entities[-1]["end"] == new_entity["start"] and entities[-1]["entity"][2:] == new_entity["entity"][2:]:
+                        entities[-1]["word"] += new_entity["word"]
+                        entities[-1]["end"] = new_entity["end"]
+                    else:
+                        entities.append({
+                            "lang/sentence": "en/ " + sentence,
+                            "entity": new_entity["entity"],
+                            "start": new_entity["start"],
+                            "end": new_entity["end"],
+                            "word": new_entity["word"],
+                        })
+
+
+        elif detection.lang == 'fa':
+            result = ner_parsbert(sentence)
+            for new_entity in result:
+                for entity in entities:
+                    if new_entity["start"] < entity["end"] and new_entity["end"] > entity["start"]:
+                        break
+                else:
+                    if entities and entities[-1]["end"] == new_entity["start"] and entities[-1]["entity"][2:] == new_entity["entity"][2:]:
+                        entities[-1]["word"] += new_entity["word"]
+                        entities[-1]["end"] = new_entity["end"]
+                    else:
+                        entities.append({
+                            "lang/sentence": "fa/" + sentence,
+                            "entity": new_entity["entity"],
+                            "start": new_entity["start"],
+                            "end": new_entity["end"],
+                            "word": new_entity["word"],
+                        })
+        else:
+            return f"can't process {detection.lang} language texts!"
+
+        all_entities.extend(entities)
+    return {"entities": all_entities}
 
 @app.get("/")
 async def root():
